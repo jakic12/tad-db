@@ -49,6 +49,12 @@ class DatabaseDiscordBot {
           f: (name) => this.dm.useDatabase(name),
         },
       },
+      help: {
+        f: () =>
+          `There is little help available with this bot, here is a list of all the commands that u can use:\n\`\`\`\n${this.getAllPossibleCommands(
+            this.databaseCommands
+          ).join("\n")}\`\`\`\nHave fun :)`,
+      },
       using: {
         useNeeded: true,
         f: () => this.dm.usingDatabase,
