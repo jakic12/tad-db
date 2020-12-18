@@ -3,9 +3,10 @@ const DatabaseManager = require("./index");
 const Discord = require("discord.js");
 const bot = new Discord.Client();
 const TOKEN = process.env.TOKEN;
+const ADMIN_ROLE = process.env.ADMIN_ROLE;
 
 class DatabaseDiscordBot {
-  constructor(TOKEN, prefix = "$") {
+  constructor(TOKEN, ADMIN_ROLE, prefix = "$") {
     bot
       .login(TOKEN)
       .then(() => {
@@ -20,6 +21,8 @@ class DatabaseDiscordBot {
 
     // bot prefix
     this.prefix = prefix;
+
+    this.adminRole = ADMIN_ROLE;
 
     this.onMessageListeners = [];
     this.onReadyListeners = [];
@@ -59,9 +62,54 @@ class DatabaseDiscordBot {
         useNeeded: true,
         f: () => this.dm.usingDatabase,
       },
+      eval: {
+        adminOnly: true,
+        f: (code) => eval(code),
+      },
       create: {
         table: { useNeeded: true, f: (name) => this.dm.createTable(name) },
         database: { f: (name) => this.dm.createDatabase(name) },
+      },
+      add: {
+        useNeeded: true,
+        record: {
+          f: (args) => {
+            const split = args.split(" ");
+            this.dm.addRecord(split.shift(), split.join(" "));
+          },
+        },
+      },
+      fetch: {
+        all: {
+          data: {
+            useNeeded: true,
+            f: (name) => JSON.stringify(this.dm.fetchAllDataFromTable(name)),
+          },
+        },
+      },
+      json: {
+        from: {
+          table: {
+            useNeeded: true,
+            f: (name) => this.dm.fetchAllDataFromTable(name),
+          },
+        },
+      },
+      filter: {
+        data: {
+          from: {
+            table: {
+              useNeeded: true,
+              f: (args) => {
+                const split = args.split(" ");
+                this.dm.filterDataFromTable(
+                  split.shift(),
+                  eval(split.join(" "))
+                );
+              },
+            },
+          },
+        },
       },
       drop: {
         all: {
@@ -88,6 +136,17 @@ class DatabaseDiscordBot {
               ) +
             "```",
         },
+        tables: {
+          f: () =>
+            "```\n" +
+            this.dm
+              .listTables()
+              .reduce(
+                (state, channel) => state + "\n" + "⤍ " + channel.name,
+                ""
+              ) +
+            "```",
+        },
       },
     };
 
@@ -95,15 +154,23 @@ class DatabaseDiscordBot {
     this.addOnReady(() => {
       this.dm = new DatabaseManager(this.bot);
       this.addOnMessage((msg) => {
-        if (msg.content.startsWith(this.prefix)) {
-          this.parseCommand(msg.content.replace(this.prefix, ""))
-            .then((output) => msg.channel.send(output || `Done.`))
-            .catch((e) => {
-              msg.channel.send(
-                new Discord.MessageEmbed().setColor("#e74c3c").setDescription(e)
-              );
-            });
-        }
+        msg.content
+          .replace(/\n/g, "")
+          .split(";")
+          .forEach((cmd) => {
+            if (cmd.startsWith(this.prefix)) {
+              this.parseCommand(cmd.replace(this.prefix, ""), msg)
+                .then((output) => msg.channel.send(output || `Done.`))
+                .catch((e) => {
+                  msg.react("😢");
+                  msg.channel.send(
+                    new Discord.MessageEmbed()
+                      .setColor("#e74c3c")
+                      .setDescription(e)
+                  );
+                });
+            }
+          });
       });
     });
   }
@@ -127,12 +194,13 @@ class DatabaseDiscordBot {
    * execute command from string (without prefix)
    * @param {String} command
    */
-  parseCommand(command) {
+  parseCommand(command, msg) {
     return new Promise(async (resolve, reject) => {
       const split_command = command.replace(this.prefix, "").split(" ");
 
       let commandStack = this.databaseCommands;
       let useNeeded = false;
+      let adminOnly = false;
       let commandChain = "";
 
       // each loop, remove keyword and search it in the command tree
@@ -142,10 +210,20 @@ class DatabaseDiscordBot {
         if (!newCommandStack) {
           reject(
             `Invalid command, possible command suggestions:\n${this.getAllPossibleCommands(
-              { [`**${commandChain}**`]: commandStack }
+              commandChain
+                ? { [`**${commandChain}**`]: commandStack }
+                : commandStack
             ).join("\n")}`
           );
         } else {
+          if (newCommandStack.useNeeded) {
+            useNeeded = true;
+          }
+
+          if (newCommandStack.commandOnly) {
+            adminOnly = true;
+          }
+
           commandChain += lastCommand + " ";
           commandStack = newCommandStack;
           if (useNeeded && !this.dm.usingDatabase) {
@@ -156,9 +234,29 @@ class DatabaseDiscordBot {
           }
 
           if (commandStack.f) {
+            if (adminOnly) {
+              if (!this.adminRole) {
+                reject(
+                  `This is a admin only command and you have no admin role defined... Yikes.`
+                );
+                return;
+              } else {
+                const role = msg.member.roles.cache.find(
+                  (r) => r.id === this.adminRole
+                );
+
+                if (!role) {
+                  msg.react("🚫");
+                  reject(`Hold up buster, you're not an admin! Stop that rn.`);
+                }
+              }
+            }
+
             try {
               const startTime = new Date();
-              const commandOut = await commandStack.f(...(split_command || []));
+              const commandOut = await commandStack.f(
+                (split_command || []).join(" ")
+              );
               resolve(
                 `${useNeeded ? `[${this.dm.usingDatabase.name}]:` : ""}${
                   commandOut ||
@@ -182,17 +280,20 @@ class DatabaseDiscordBot {
   }
 
   onMessage(msg) {
-    if (msg.content.indexOf("ping") == 0) {
-      msg.channel.send(
-        `\`\`\`\n(\\______/)\n( ͡ ͡° ͜ ʖ ͡ ͡°)\n\\╭☞     \\╭☞ POG ${msg.content.replace(
-          "ping",
-          ""
-        )}\n\`\`\``
-      );
-    } else if (msg.content.indexOf("%MAGIC_STRING%") == 0) {
-      eval(msg.content.replace("%MAGIC_STRING%", ""));
+    try {
+      if (msg.content.indexOf("ping") == 0) {
+        msg.channel.send(
+          `\`\`\`\n(\\______/)\n( ͡ ͡° ͜ ʖ ͡ ͡°)\n\\╭☞     \\╭☞ POG ${msg.content.replace(
+            "ping",
+            ""
+          )}\n\`\`\``
+        );
+      }
+
+      this.onMessageListeners.map((g) => g(msg));
+    } catch (e) {
+      msg.channel.send(`Sorry, I did an autismo, my brain broke...`, e);
     }
-    this.onMessageListeners.map((g) => g(msg));
   }
 
   addOnMessage(fnc) {
@@ -200,4 +301,4 @@ class DatabaseDiscordBot {
   }
 }
 
-const discordBotInstance = new DatabaseDiscordBot(TOKEN);
+const discordBotInstance = new DatabaseDiscordBot(TOKEN, ADMIN_ROLE);

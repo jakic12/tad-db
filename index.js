@@ -1,3 +1,5 @@
+const fetchAll = require("discord-fetch-all");
+
 class DatabaseManager {
   /**
    * Creates a DatabaseManager and binds it to the bot and discord server
@@ -9,7 +11,7 @@ class DatabaseManager {
 
     this.guild = guild || bot.guilds.cache.map((e) => e)[0];
     console.log(
-      `⇒ DatabaseManager instance made, If u need me, i'll be spamming '${this.guild.name}'`
+      `⇒ DatabaseManager instance made, if u need me, I'll be spamming '${this.guild.name}'`
     );
 
     this.errorFunct = (reject) => (e) => {
@@ -193,6 +195,101 @@ class DatabaseManager {
           resolve();
         })
         .catch(this.errorFunct(reject));
+    });
+  }
+
+  fetchAllDataFromTable(name, database = this.usingDatabase) {
+    return new Promise(async (resolve, reject) => {
+      if (!database || !database.id) {
+        this.errorFunct(reject)("database is undefined");
+        return;
+      }
+      const channel = await this.findTable(name, database);
+      try {
+        const allMessages = await fetchAll.messages(channel, {
+          reverseArray: true,
+        });
+
+        const file = JSON.parse(allMessages.join("") || `[]`);
+        console.log(file);
+
+        resolve(file);
+      } catch (e) {
+        this.errorFunct(reject)(e);
+      }
+    });
+  }
+
+  filterDataFromTable(name, filterFunc, database = this.usingDatabase) {
+    return new Promise(async (resolve, reject) => {
+      const channel = await this.findTable(name);
+
+      const allMessages = await fetchAll.messages(channel, {
+        reverseArray: true,
+      });
+      const file = JSON.parse(allMessages.join("") || `[]`);
+
+      const filtered = file.filter(filterFunc);
+      const blocks = this.blockify(JSON.stringify(filtered));
+
+      Promise.all(
+        blocks.map((b, i) => {
+          allMessages[i].edit(b);
+        })
+      )
+        .then(() => {
+          Promise.all(
+            allMessages.slice(blocks.length).map((m, i) => {
+              m.delete();
+            })
+          )
+            .then(() => resolve())
+            .catch(this.errorFunct(reject));
+        })
+        .catch(this.errorFunct(reject));
+    });
+  }
+
+  blockify(message, blockLength = 2000) {
+    const messages = [];
+    for (let i = 0; i < message.length / blockLength; i++) {
+      messages.push(message.substring(i * blockLength, (i + 1) * blockLength));
+    }
+
+    return messages;
+  }
+
+  addRecord(name, entry, database = this.usingDatabase) {
+    return new Promise(async (resolve, reject) => {
+      if (!database || !database.id) {
+        this.errorFunct(reject)("database is undefined");
+        return;
+      }
+
+      const existing = await this.fetchAllDataFromTable(name, database);
+      existing.push(entry);
+
+      const channel = await this.findTable(name, database);
+
+      channel.messages
+        .fetch({ limit: 1 })
+        .then((messages) => {
+          console.log(messages);
+          let lastMessage = messages.first();
+
+          const newMessage = (lastMessage || { content: `[]` }).content
+            .replace(/\]$/g, `,${entry}]`)
+            .replace(/^\[\,/g, `[`);
+
+          const messageBlocks = this.blockify(newMessage);
+
+          if (lastMessage) lastMessage.edit(messageBlocks.shift());
+
+          messageBlocks.map((mes) => {
+            channel.send(mes);
+          });
+        })
+        .catch(console.error);
     });
   }
 }
